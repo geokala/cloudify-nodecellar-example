@@ -214,3 +214,63 @@ outputs:
     value:
       ip_address: { get_attribute: [ nodecellar_ip, floating_ip_address ] }
       port: { get_property: [haproxy, frontend_port] }
+
+policy_types:
+  scale_policy_type:
+    source: policies/scale.clj
+    properties:
+      service_selector:
+        description: regular expression that selects the metric to be measured
+        default: ".*"
+      moving_window_size:
+        description: the moving window for individual sources in secs
+        default: 10
+      scale_threshold:
+        description: the value to trigger scaling over aggregrated moving values
+      scale_limit:
+        description: scaling limit
+        default: 10
+      scale_direction:
+        description: scale up (<) or scale down (>)
+        default: <
+      cooldown_time:
+        description: the time to wait before evaluating again after a scale
+        default: 30
+
+groups:
+  # test_group:
+  #   members: [nodejs_host]
+  #   policies:
+  #     simple_autoheal_policy:
+  #       type: cloudify.policies.types.host_failure
+  #       properties:
+  #         service:
+  #           - cpu.total.system
+  #       triggers:
+  #         auto_heal_trigger:
+  #           type: cloudify.policies.triggers.execute_workflow
+  #           parameters:
+  #             workflow: heal
+  #             workflow_parameters:
+  #               node_instance_id: { get_property: [SELF, node_id] }
+  #               diagnose_value: { get_property: [SELF, diagnose] }
+
+  auto_scale_group:
+    members: [nodejs_host]
+    policies:
+      test_policy:
+        type: scale_policy_type
+        properties:
+          moving_window_size: 0
+          scale_threshold: 0
+          cooldown_time: 60
+          service_selector: ".*cpu_total_system"
+        triggers:
+          execute_scale_workflow:
+            type: cloudify.policies.triggers.execute_workflow
+            parameters:
+              workflow: scale
+              workflow_parameters:
+                delta: 1
+                node_id: nodecellar
+                scale_compute: true
