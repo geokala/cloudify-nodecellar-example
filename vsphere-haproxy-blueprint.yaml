@@ -1,0 +1,157 @@
+tosca_definitions_version: cloudify_dsl_1_2
+
+description: >
+  This Blueprint installs the nodecellar application behind
+  an haproxy instance on a vsphere environment.
+
+imports:
+  - http://www.getcloudify.org/spec/cloudify/3.3.1/types.yaml
+  - http://www.getcloudify.org/spec/diamond-plugin/1.3.1/plugin.yaml
+  - http://www.getcloudify.org/spec/vsphere-plugin/2.0/plugin.yaml
+  - types/nodecellar.yaml
+  - types/vsphere-types.yaml
+  - types/haproxy/haproxy.yaml
+  - types/scale/scale.yaml
+
+inputs:
+
+  template_name:
+    description: >
+      Template to be used when launching agent VMs
+
+  agent_user:
+    description: >
+      User for connecting to agent VMs
+
+  management_network:
+    description: >
+      Management network on vsphere
+
+  external_network:
+    description: >
+      External network on vsphere
+
+node_templates:
+
+  nodecellar:
+    type: nodecellar.nodes.NodecellarApplicationModule
+    relationships:
+
+      ################################
+      # Setting the mongo connection
+      ################################
+
+      - type: node_connected_to_mongo
+        target: mongod
+
+      ################################
+      # Setting the nodejs connection
+      ################################
+
+      - type: node_contained_in_nodejs
+        target: nodejs
+
+      ################################
+      # Setting the haproxy connection
+      ################################
+
+      - type: app_connected_to_haproxy
+        target: haproxy
+
+  mongod:
+    type: nodecellar.nodes.MonitoredMongoDatabase
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: mongod-host
+
+  nodejs:
+    type: nodecellar.nodes.NodeJSServer
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: nodejs-host
+
+  ########################################
+  # Note: only ubuntu haproxy installation
+  # is supported.
+  ########################################
+
+  haproxy:
+    type: nodecellar.nodes.MonitoredHAProxy
+    properties:
+      backend_app_port: { get_property: [ nodecellar, port ] }
+    relationships:
+      - target: haproxy-frontend-host
+        type: cloudify.relationships.contained_in
+
+  mongod-host:
+    type: nodecellar.nodes.MonitoredServer
+
+  nodejs-host:
+    type: nodecellar.nodes.MonitoredServer
+
+    ###########################################################
+    # Setting the nodejs_host initial number of instances to 2.
+    # The default values for instances.deploy is 1.
+    ###########################################################
+
+    instances:
+      deploy: 2
+
+  haproxy-frontend-host:
+    type: nodecellar.nodes.MonitoredServer
+
+
+###########################################################
+# This outputs section exposes the application endpoint.
+# You can access it by running:
+#   - cfy deployments -d <deployment_id> outputs
+###########################################################
+
+outputs:
+  endpoint:
+    description: Web application endpoint
+    value:
+      ip_address: { get_attribute: [ haproxy-frontend-host, public_ip ] }
+      port: { get_property: [haproxy, frontend_port] }
+
+groups:
+
+  scale_up_group:
+    members: [haproxy]
+    policies:
+      auto_scale_up:
+        type: scale_policy_type
+        properties:
+          scale_limit: 3
+          scale_direction: <
+          scale_threshold: 3
+          service_selector: .*haproxy.servers.backend.rate$
+        triggers:
+          execute_scale_workflow:
+            type: cloudify.policies.triggers.execute_workflow
+            parameters:
+              workflow: scale
+              workflow_parameters:
+                delta: 1
+                node_id: nodecellar
+                scale_compute: true
+
+  scale_down_group:
+    members: [haproxy]
+    policies:
+      auto_scale_down:
+        type: scale_policy_type
+        properties:
+          scale_limit: 2
+          scale_direction: >
+          scale_threshold: 1
+          service_selector: .*haproxy.servers.backend.rate$
+        triggers:
+          execute_scale_workflow:
+            type: cloudify.policies.triggers.execute_workflow
+            parameters:
+              workflow: scale
+              workflow_parameters:
+                delta: -1
+                node_id: nodecellar
+                scale_compute: true
