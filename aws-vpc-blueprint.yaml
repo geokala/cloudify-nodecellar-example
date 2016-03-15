@@ -1,0 +1,197 @@
+tosca_definitions_version: cloudify_dsl_1_2
+
+description: >
+  This Blueprint installs the nodecellar application
+  on an amazon VPC cloud environment.
+
+imports:
+  - http://www.getcloudify.org/spec/cloudify/3.4m3/types.yaml
+  - http://www.getcloudify.org/spec/aws-plugin/1.4/plugin.yaml
+  - http://www.getcloudify.org/spec/diamond-plugin/1.3.1/plugin.yaml
+  - types/nodecellar.yaml
+  - types/aws-ec2-types.yaml
+
+#####################################################################################
+# inputs section allows the user to use same
+# blueprint for creating different deployments, each one
+# with its own parameters.
+# to specify deployment inputs run:
+#   - cfy deployments create -b <blueprint_id> -d <deployment_id> -i inputs.json
+#####################################################################################
+
+inputs:
+
+  image:
+    description: >
+      Image to be used when launching agent VM's
+
+  size:
+    description: >
+      Flavor of the agent VM's
+
+  agent_user:
+    description: >
+      User for connecting to agent VM's
+
+  vpc_id:
+    description: >
+      The VPC to deploy into
+
+  vpc_subnet_id:
+    description: >
+      The VPC subnet to deploy into.
+      This subnet must auto-assign public IPs and have an internet gateway
+
+node_templates:
+
+  nodecellar:
+    type: nodecellar.nodes.NodecellarApplicationModule
+    relationships:
+
+      ################################
+      # Setting the mongo connection
+      ################################
+
+      - type: node_connected_to_mongo
+        target: mongod
+
+      ################################
+      # Setting the nodejs connection
+      ################################
+
+      - type: node_contained_in_nodejs
+        target: nodejs
+
+  mongod:
+    type: nodecellar.nodes.MonitoredMongoDatabase
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: mongod_host
+
+  nodejs:
+    type: nodecellar.nodes.NodeJSServer
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: nodejs_host
+
+  mongod_host:
+    type: nodecellar.nodes.MonitoredServer
+    relationships:
+
+      ###########################################################
+      # Attaching the mongo security group to the mongo host
+      ###########################################################
+
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: mongod_security_group
+
+      ###########################################################
+      # Ensure this is deployed in the correct VPC subnet
+      ###########################################################
+      - type: cloudify.aws.relationships.instance_contained_in_subnet
+        target: vpc_subnet
+
+  nodejs_host:
+    type: nodecellar.nodes.MonitoredServer
+    relationships:
+
+      ###########################################################
+      # Attaching the nodecellar security group to the nodejs host
+      ###########################################################
+
+      - type: cloudify.aws.relationships.instance_connected_to_security_group
+        target: nodecellar_security_group
+
+      ###########################################################
+      # Ensure this is deployed in the correct VPC subnet
+      ###########################################################
+      - type: cloudify.aws.relationships.instance_contained_in_subnet
+        target: vpc_subnet
+
+  ###########################################################
+  # The already existing VPC
+  ###########################################################
+  vpc:
+    type: cloudify.aws.nodes.VPC
+    properties:
+      resource_id: { get_input: vpc_id }
+      use_external_resource: true
+      # We don't need this to be set but it is required by the schema
+      cidr_block: ''
+
+  ###########################################################
+  # The already existing VPC subnet
+  ###########################################################
+  vpc_subnet:
+    type: cloudify.aws.nodes.Subnet
+    properties:
+      resource_id: { get_input: vpc_subnet_id }
+      use_external_resource: true
+      # We don't need this to be set but it is required by the schema
+      cidr_block: ''
+
+  ###########################################################
+  # A security group to enable access to the mongo host
+  # using the port of the mongo node.
+  #
+  # We need this so that the nodecellar application can
+  # comminicate with MongoDB, since they are running on
+  # different hosts.
+  ###########################################################
+
+  mongod_security_group:
+    type: cloudify.aws.nodes.SecurityGroup
+    properties:
+      description: Security Group for Mongo VMs
+      rules:
+        - ip_protocol: tcp
+          from_port: { get_property: [ mongod, port ] }
+          to_port: { get_property: [ mongod, port ] }
+          cidr_ip: 0.0.0.0/0
+        - ip_protocol: tcp
+          from_port: 28017
+          to_port: 28017
+          cidr_ip: 0.0.0.0/0
+    relationships:
+      #######################################################
+      # Make this security group in a VPC
+      #######################################################
+      - type: cloudify.aws.relationships.security_group_contained_in_vpc
+        target: vpc
+
+  ###########################################################
+  # A security group to enable access to the nodejs host
+  # using the port of the nodejs node.
+  #
+  # We need this so that the nodecellar application can
+  # receive web traffic.
+  ###########################################################
+
+  nodecellar_security_group:
+    type: cloudify.aws.nodes.SecurityGroup
+    properties:
+      description: Security Group for Nodecellar VMs
+      rules:
+        - ip_protocol: tcp
+          from_port: { get_property: [ nodecellar, port ] }
+          to_port: { get_property: [ nodecellar, port ] }
+          cidr_ip: 0.0.0.0/0
+    relationships:
+      #######################################################
+      # Make this security group in a VPC
+      #######################################################
+      - type: cloudify.aws.relationships.security_group_contained_in_vpc
+        target: vpc
+
+###########################################################
+# This outputs section exposes the application endpoint.
+# You can access it by running:
+#   - cfy deployments -d <deployment_id> outputs
+###########################################################
+
+outputs:
+  endpoint:
+    description: Web application endpoint
+    value:
+      ip_address: { get_attribute: [ nodejs_host, public_ip_address ] }
+      port: { get_property: [ nodecellar, port ] }
